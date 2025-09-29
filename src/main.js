@@ -5,17 +5,18 @@
 import { AudioCapturer } from './audio/audio-capturer.js';
 import * as DomController from './ui/dom-controller.js';
 import { UIRenderer } from './ui/ui-renderer.js';
+import { MorseAnalyzer } from './morse/morse-analyzer.js';
 
 class App {
     constructor() {
         this.audioCapturer = new AudioCapturer();
-        this.renderer = null; // Will be initialized on start
+        this.renderer = null;
+        this.analyzer = null;
         this.animationFrameId = null;
 
         this.timeDomainData = null;
         this.frequencyData = null;
 
-        // UIを初期化し、状態変更時のコールバックとCanvasのIDを渡す
         DomController.initialize(this.handleStateChange.bind(this), 'visualizer');
     }
 
@@ -28,26 +29,33 @@ class App {
             try {
                 await this.audioCapturer.start();
                 
-                const analyser = this.audioCapturer.getAnalyser();
-                if (analyser) {
-                    // UIRendererをAudioContextの情報を使って初期化
+                const analyserNode = this.audioCapturer.getAnalyser();
+                if (analyserNode) {
+                    const audioContext = this.audioCapturer.getAudioContext();
+                    const audioParams = {
+                        sampleRate: audioContext.sampleRate,
+                        fftSize: analyserNode.fftSize
+                    };
+
+                    // レンダラーがなければ初期化
                     if (!this.renderer) {
                         const canvas = document.getElementById('visualizer');
-                        const audioContext = this.audioCapturer.getAudioContext();
-                        this.renderer = new UIRenderer(canvas, {
-                            sampleRate: audioContext.sampleRate,
-                            fftSize: analyser.fftSize
-                        });
+                        this.renderer = new UIRenderer(canvas, audioParams);
+                    }
+                    // アナライザーがなければ初期化
+                    if (!this.analyzer) {
+                        this.analyzer = new MorseAnalyzer(audioParams);
                     }
 
-                    this.timeDomainData = new Uint8Array(analyser.fftSize);
-                    this.frequencyData = new Uint8Array(analyser.frequencyBinCount);
+                    this.timeDomainData = new Uint8Array(analyserNode.fftSize);
+                    this.frequencyData = new Uint8Array(analyserNode.frequencyBinCount);
                 }
                 
+                // 描画ループを開始
                 this.update();
             } catch (error) {
+                console.error('Error accessing microphone:', error);
                 alert('マイクの取得に失敗しました。アクセスを許可してください。');
-                // TODO: ボタンの状態を元に戻すなどのUI更新
             }
         } else {
             this.audioCapturer.stop();
@@ -55,10 +63,6 @@ class App {
                 cancelAnimationFrame(this.animationFrameId);
                 this.animationFrameId = null;
             }
-            // 停止時にクリアするのは任意だが、ここではクリアしないでおく
-            // if (this.renderer) {
-            //     this.renderer.clear();
-            // }
         }
     }
 
@@ -67,22 +71,22 @@ class App {
      */
     update() {
         const analyser = this.audioCapturer.getAnalyser();
-        if (analyser) {
+        if (analyser && this.analyzer) {
+            // 最新の音声データを取得
             analyser.getByteTimeDomainData(this.timeDomainData);
             analyser.getByteFrequencyData(this.frequencyData);
 
-            let currentVolume = 0;
-            for (const value of this.frequencyData) {
-                if (value > currentVolume) {
-                    currentVolume = value;
-                }
-            }
+            // 音声データを分析
+            const analysisResult = this.analyzer.analyze(this.frequencyData);
 
-            this.renderer.render(this.timeDomainData, this.frequencyData, currentVolume);
+            // 分析結果を基に描画
+            this.renderer.render(this.timeDomainData, this.frequencyData, analysisResult);
         }
 
+        // 次のフレームを予約
         this.animationFrameId = requestAnimationFrame(this.update.bind(this));
     }
 }
 
+// アプリケーションを起動
 new App();
