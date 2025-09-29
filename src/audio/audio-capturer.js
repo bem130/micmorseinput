@@ -1,5 +1,16 @@
 /**
- * @fileoverview マイクからの音声入力を取得し、Web Audio APIをセットアップします。
+ * @fileoverview マイク音声の取得とWeb Audio APIの管理
+ * @description
+ * このファイルは、ブラウザのマイク機能とのすべてのやり取りを担当します。
+ * ユーザーにマイクの使用許可を求め、音声ストリームを取得し、
+ * リアルタイムで周波数分析を行うための`AnalyserNode`をセットアップします。
+ *
+ * 現在の戦略:
+ * 1. `navigator.mediaDevices.getUserMedia` APIを使用して、安全なコンテキストでマイクへのアクセスを要求します。
+ * 2. 音声ストリームが取得できたら、`AudioContext`を生成します。
+ * 3. ストリームをソースとして、高速フーリエ変換(FFT)を実行する`AnalyserNode`に接続します。
+ * 4. AnalyserNodeの`smoothingTimeConstant`を低い値に設定し、モールス信号の素早い
+ *    音量変化を捉えられるように、応答性を高めています。
  */
 
 /**
@@ -29,8 +40,9 @@ export class AudioCapturer {
             const source = this.audioContext.createMediaStreamSource(this.mediaStream);
             this.analyser = this.audioContext.createAnalyser();
             
-            // FFTのサイズ。2048は一般的な値。
             this.analyser.fftSize = 2048;
+            // 音量変化の応答性を高めるため、時間平滑化の定数を下げる（デフォルトは0.8）
+            this.analyser.smoothingTimeConstant = 0.1;
 
             source.connect(this.analyser);
             
@@ -38,7 +50,7 @@ export class AudioCapturer {
 
         } catch (err) {
             console.error("Error capturing audio.", err);
-            this.stop(); // エラーが発生した場合はリソースを解放
+            this.stop();
             throw err;
         }
     }

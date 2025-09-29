@@ -1,5 +1,20 @@
 /**
- * @fileoverview 音声周波数データを分析し、モールス信号を抽出します。
+ * @fileoverview 音声周波数データの分析と口笛の検出
+ * @description
+ * このファイルは、生の周波数データを受け取り、それを分析して口笛の音に特有の
+ * 周波数ピークを特定する役割を担います。声や環境ノイズのような広帯域の音と、
+ * 口笛のような狭帯域の鋭い音を区別することが目的です。
+ *
+ * 現在の戦略:
+ * 1. 【デフォルト周波数の設定】探索の基点となる周波数を約2kHzに初期設定します。
+ *    これにより、起動直後や信号が完全に途切れた後でも、即座に口笛の音域の探索を開始できます。
+ * 2. 【平滑化された周波数の追跡】毎フレーム検出される「生の」ピーク周波数に対し、
+ *    線形補間を用いて「平滑化された」周波数が滑らかに追従します。
+ *    ただし、再捕捉の初動を速くするため、無音からの復帰時は平滑化を適用せず即座に移動します。
+ * 3. 【鋭さの判定】ピークが見つかると、それが口笛特有の「鋭い」ピークであるかを検証し、
+ *    そうでなければノイズとして棄却します。
+ * 4. 【信号ロストへの耐性】信号が一時的に途切れた場合、即座にリセットするのではなく、
+ *    長めの「猶予期間」を設け、その間は最後の周波数を保持することで、追跡の安定性を高めています。
  */
 
 export class MorseAnalyzer {
@@ -10,30 +25,29 @@ export class MorseAnalyzer {
         this.sampleRate = audioParams.sampleRate;
         this.fftSize = audioParams.fftSize;
         
-        this.frequencyBandwidth = 2; // ピーク周辺で平均化する周波数ビンの数
-        this.noiseThreshold = 30; // これを下回る音量は無音と見なすノイズ閾値
-        this.sharpnessThreshold = 2.5; // ピークの「鋭さ」の閾値
+        this.frequencyBandwidth = 5;
+        this.noiseThreshold = 30;
+        this.sharpnessThreshold = 2.5;
 
-        // --- 【追加】状態を保持するためのプロパティ ---
-        // 前回のフレームで検出したピークのインデックス
-        this.lastDominantFreqIndex = -1;
-        // lastDominantFreqIndexの周辺を探索する範囲（ビン単位）
+        // --- 状態を保持するためのプロパティ ---
+        this.defaultFreqIndex = Math.round(2000 * this.fftSize / this.sampleRate); // 約2kHzをデフォルトの探索基点とする
+        this.persistedFreqIndex = this.defaultFreqIndex; // 信号ロスト後も記憶し続ける、最後に有効だったピーク位置
+        this.smoothedFreqIndex = -1;  // 平滑化された、外部に提供する用の周波数インデックス
+        this.smoothingFactor = 0.2;
         this.searchNeighborhood = 20;
+
+        this.framesSinceLastPeak = 0; // 最後にピークを検出してからのフレーム数
+        this.maxFramesToPersist = 30; // 信号を保持する猶予フレーム数
     }
 
     /**
      * @private
      * 指定された範囲内で最も鋭いピークを探します。
-     * @param {Uint8Array} frequencyData - 周波数データ。
-     * @param {number} startIndex - 探索開始インデックス。
-     * @param {number} endIndex - 探索終了インデックス。
-     * @returns {{index: number, volume: number}} 見つかったピークの情報。なければindexは-1。
      */
     _findSharpestPeak(frequencyData, startIndex, endIndex) {
         let peakIndex = -1;
         let peakVolume = 0;
 
-        // 1. 範囲内で最大の音量を持つピークを見つける
         for (let i = startIndex; i < endIndex; i++) {
             if (frequencyData[i] > peakVolume) {
                 peakVolume = frequencyData[i];
@@ -41,12 +55,10 @@ export class MorseAnalyzer {
             }
         }
 
-        // 2. ノイズ閾値を下回っていれば無効
         if (peakVolume < this.noiseThreshold) {
             return { index: -1, volume: 0 };
         }
 
-        // 3. ピークの「鋭さ」を検証
         const neighborhood = 10;
         let avgNeighborVolume = 0;
         let neighborCount = 0;
@@ -59,7 +71,6 @@ export class MorseAnalyzer {
         }
         avgNeighborVolume = neighborCount > 0 ? avgNeighborVolume / neighborCount : 0;
 
-        // 鋭さが足りなければ無効
         if (peakVolume < avgNeighborVolume * this.sharpnessThreshold) {
             return { index: -1, volume: 0 };
         }
@@ -67,47 +78,54 @@ export class MorseAnalyzer {
         return { index: peakIndex, volume: peakVolume };
     }
 
-
     /**
      * 周波数データのスナップショットを分析し、安定して口笛の信号を追跡します。
      * @param {Uint8Array} frequencyData - AnalyserNodeから取得した周波数データ。
      * @returns {{dominantFreqIndex: number, targetVolume: number}}
      */
     analyze(frequencyData) {
-        let dominantFreqIndex = -1;
-        let maxVolume = 0;
-
-        // 【変更】ステップ1: 前回のピーク位置の近くを優先的に探索
-        if (this.lastDominantFreqIndex !== -1) {
-            const start = Math.max(0, this.lastDominantFreqIndex - this.searchNeighborhood);
-            const end = Math.min(frequencyData.length, this.lastDominantFreqIndex + this.searchNeighborhood);
+        let currentRawPeakIndex = -1;
+        
+        if (this.persistedFreqIndex !== -1) {
+            const start = Math.max(0, this.persistedFreqIndex - this.searchNeighborhood);
+            const end = Math.min(frequencyData.length, this.persistedFreqIndex + this.searchNeighborhood);
             const peak = this._findSharpestPeak(frequencyData, start, end);
-            dominantFreqIndex = peak.index;
-            maxVolume = peak.volume;
+            currentRawPeakIndex = peak.index;
         }
 
-        // 【変更】ステップ2: 近くで見つからなかった場合、全体を探索
-        if (dominantFreqIndex === -1) {
+        if (currentRawPeakIndex === -1) {
             const start = Math.floor(100 * this.fftSize / this.sampleRate);
             const end = frequencyData.length;
             const peak = this._findSharpestPeak(frequencyData, start, end);
-            dominantFreqIndex = peak.index;
-            maxVolume = peak.volume;
+            currentRawPeakIndex = peak.index;
         }
 
-        // 次のフレームのために状態を更新
-        this.lastDominantFreqIndex = dominantFreqIndex;
+        if (currentRawPeakIndex !== -1) {
+            this.framesSinceLastPeak = 0;
+            
+            if (this.smoothedFreqIndex === -1) {
+                this.smoothedFreqIndex = currentRawPeakIndex;
+            } else {
+                this.smoothedFreqIndex += (currentRawPeakIndex - this.smoothedFreqIndex) * this.smoothingFactor;
+            }
+            this.persistedFreqIndex = this.smoothedFreqIndex;
+        } else {
+            this.framesSinceLastPeak++;
+            if (this.framesSinceLastPeak > this.maxFramesToPersist) {
+                this.smoothedFreqIndex = -1;
+                this.persistedFreqIndex = this.defaultFreqIndex;
+            }
+        }
 
-        // 有効なピークが見つからなかった場合
-        if (dominantFreqIndex === -1) {
+        if (this.smoothedFreqIndex === -1) {
              return { dominantFreqIndex: -1, targetVolume: 0 };
         }
 
-        // ステップ3: 有効なピークの周辺の音量を計算する (変更なし)
         let totalVolume = 0;
         let count = 0;
-        const startIndex = Math.max(0, dominantFreqIndex - this.frequencyBandwidth);
-        const endIndex = Math.min(frequencyData.length - 1, dominantFreqIndex + this.frequencyBandwidth);
+        const roundedIndex = Math.round(this.smoothedFreqIndex);
+        const startIndex = Math.max(0, roundedIndex - this.frequencyBandwidth);
+        const endIndex = Math.min(frequencyData.length - 1, roundedIndex + this.frequencyBandwidth);
 
         for (let i = startIndex; i <= endIndex; i++) {
             totalVolume += frequencyData[i];
@@ -116,6 +134,6 @@ export class MorseAnalyzer {
         
         const targetVolume = count > 0 ? totalVolume / count : 0;
 
-        return { dominantFreqIndex, targetVolume };
+        return { dominantFreqIndex: this.smoothedFreqIndex, targetVolume };
     }
 }

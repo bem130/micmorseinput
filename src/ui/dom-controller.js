@@ -1,5 +1,15 @@
 /**
- * @fileoverview DOM要素のイベントハンドリングと状態管理を担当します。
+ * @fileoverview DOM要素のイベントハンドリング
+ * @description
+ * このファイルは、Canvas以外のHTML要素（ボタンなど）のユーザー操作を管理します。
+ *
+ * 現在の戦略:
+ * 1. `initialize`関数が、アプリケーションの初期化時に`main.js`から呼び出されます。
+ * 2. 開始/停止ボタンや画像コピーボタンに、クリックイベントリスナーを登録します。
+ * 3. イベントが発生した際、このファイル自身がアプリケーションのロジックを直接操作する
+ *    のではなく、`main.js`から渡されたコールバック関数(`onStateChange`)を呼び出します。
+ *    これにより、UIの関心事とアプリケーションのロジックを分離しています（関心の分離）。
+ * 4. 画像のコピー機能のように、DOMに密接に関連する処理は、このファイル内で完結させます。
  */
 
 /**
@@ -29,7 +39,6 @@ export function initialize(onStateChange, canvasId) {
                 new ClipboardItem({ 'image/png': blob })
             ]);
             
-            // ユーザーへのフィードバック
             const originalText = copyButton.textContent;
             copyButton.textContent = 'Copied!';
             setTimeout(() => {

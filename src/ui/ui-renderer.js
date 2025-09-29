@@ -1,5 +1,15 @@
 /**
- * @fileoverview Canvasへの描画を担当します。波形、スペクトログラム、音量履歴などを表示します。
+ * @fileoverview Canvasへの描画処理
+ * @description
+ * このファイルは、HTMLの`<canvas>`要素へのすべての描画処理を担当します。
+ * 音声データや分析結果を視覚的に表現することが目的です。
+ *
+ * 現在の戦略:
+ * 1. 【完全再描画】毎フレームCanvas全体をクリアし、すべての要素をゼロから再描画します。
+ * 2. 【履歴の保持】スペクトログラム、音量、そして分析された周波数の履歴をそれぞれ配列に保持します。
+ * 3. 【時間軸のスケール】約5秒間の履歴データを表示領域全体に引き伸ばして描画します。
+ *    これにより、モールス信号の短点・長点といった短いイベントが詳細に確認できるようになります。
+ * 4. 【スペクトログラム上のハイライト】分析された周波数の履歴を、スペクトログラム上に暗い線として重ねて描画し、口笛の音の軌跡を視覚的に強調します。
  */
 
 export class UIRenderer {
@@ -23,10 +33,12 @@ export class UIRenderer {
         this.logMinFreq = Math.log(this.minFreq);
         this.logFreqRange = Math.log(this.maxFreq) - this.logMinFreq;
 
-        // 【変更】描画に必要な履歴データを保持する配列
         this.volumeHistory = [];
         this.spectrogramHistory = [];
-        this.maxHistorySize = this.width - this.layout.labelMargin - this.layout.spectrumWidth;
+        this.frequencyHistory = [];
+        
+        // 5秒間の履歴を保持 (5 seconds * 60 fps = 300 frames)
+        this.maxHistorySize = 300; 
     }
 
     /**
@@ -36,34 +48,26 @@ export class UIRenderer {
      * @param {{dominantFreqIndex: number, targetVolume: number}} analysisResult - 音声分析結果。
      */
     render(timeDomainData, frequencyData, analysisResult) {
-        // --- 履歴データの管理 ---
-        // 音量履歴
         this.volumeHistory.push(analysisResult.targetVolume);
-        if (this.volumeHistory.length > this.maxHistorySize) {
-            this.volumeHistory.shift();
-        }
-        // スペクトログラム履歴（必ずコピーを保存する）
-        this.spectrogramHistory.push(new Uint8Array(frequencyData));
-        if (this.spectrogramHistory.length > this.maxHistorySize) {
-            this.spectrogramHistory.shift();
-        }
+        if (this.volumeHistory.length > this.maxHistorySize) this.volumeHistory.shift();
 
-        // --- 描画処理 ---
-        // 【変更】毎フレーム、Canvas全体をクリア
+        this.spectrogramHistory.push(new Uint8Array(frequencyData));
+        if (this.spectrogramHistory.length > this.maxHistorySize) this.spectrogramHistory.shift();
+        
+        this.frequencyHistory.push(analysisResult.dominantFreqIndex);
+        if (this.frequencyHistory.length > this.maxHistorySize) this.frequencyHistory.shift();
+
         this.ctx.fillStyle = '#111';
         this.ctx.fillRect(0, 0, this.width, this.height);
 
-        // 各セクションの描画
         this._drawWaveform(timeDomainData);
         this._drawCurrentSpectrum(frequencyData);
-        this._drawSpectrogram(); // 引数が不要に
+        this._drawFrequencyHistoryHighlight();
+        this._drawSpectrogram();
         this._drawVolumeHistory();
         this._drawAxesAndLabels();
         
-        // オーバーレイの描画
-        if (analysisResult.dominantFreqIndex !== -1) {
-            this._drawTargetFrequencyHighlight(analysisResult.dominantFreqIndex);
-        } else {
+        if (analysisResult.dominantFreqIndex === -1) {
             this._drawNoTargetMessage();
         }
     }
@@ -123,28 +127,22 @@ export class UIRenderer {
         }
     }
 
-    /**
-     * @private
-     * 【修正】履歴データを用いてスペクトログラム全体を再描画します。
-     */
     _drawSpectrogram() {
         const startX = this.layout.labelMargin + this.layout.spectrumWidth;
         const sectionY = this.height / 3;
         const sectionHeight = this.height / 3;
+        const drawableWidth = this.width - startX;
+        const stepX = drawableWidth / this.maxHistorySize;
 
-        // 履歴内の各データ（各時刻の周波数データ）をループ
         for (let t = 0; t < this.spectrogramHistory.length; t++) {
-            const x = startX + t; // X座標は時刻（履歴のインデックス）に対応
+            const x = startX + t * stepX;
             const historicalFreqData = this.spectrogramHistory[t];
-
-            // Y座標（ピクセル）をループして垂直線を引く
             for (let y = 0; y < sectionHeight; y++) {
                 const freqIndex = this._yToFreqIndex(y, sectionHeight);
                 if (freqIndex < 0 || freqIndex >= historicalFreqData.length) continue;
-
                 const volume = historicalFreqData[freqIndex];
                 this.ctx.fillStyle = this._volumeToColor(volume);
-                this.ctx.fillRect(x, sectionY + y, 1, 1);
+                this.ctx.fillRect(x, sectionY + y, Math.ceil(stepX), 1);
             }
         }
     }
@@ -153,14 +151,49 @@ export class UIRenderer {
         const sectionY = (this.height / 3) * 2;
         const sectionHeight = this.height / 3;
         const startX = this.layout.labelMargin + this.layout.spectrumWidth;
+        const drawableWidth = this.width - startX;
+        const stepX = drawableWidth / this.maxHistorySize;
+
         this.ctx.lineWidth = 2;
         this.ctx.strokeStyle = 'rgb(100, 150, 255)';
         this.ctx.beginPath();
         for (let i = 0; i < this.volumeHistory.length; i++) {
-            const x = startX + i;
+            const x = startX + i * stepX;
             const volume = this.volumeHistory[i] / 255.0;
             const y = sectionY + (sectionHeight - (volume * sectionHeight));
             if (i === 0) this.ctx.moveTo(x, y); else this.ctx.lineTo(x, y);
+        }
+        this.ctx.stroke();
+    }
+    
+    /**
+     * スペクトログラム上に、検出された周波数の軌跡を暗い線で描画します。
+     * @private
+     */
+    _drawFrequencyHistoryHighlight() {
+        const sectionY = this.height / 3;
+        const sectionHeight = this.height / 3;
+        const startX = this.layout.labelMargin + this.layout.spectrumWidth;
+        const drawableWidth = this.width - startX;
+        const stepX = drawableWidth / this.maxHistorySize;
+
+        this.ctx.lineWidth = 10;
+        this.ctx.strokeStyle = 'rgba(78, 1, 1, 1)';
+        this.ctx.beginPath();
+        for (let i = 0; i < this.frequencyHistory.length; i++) {
+            const freqIndex = this.frequencyHistory[i];
+            if (freqIndex === -1) continue;
+            
+            const x = startX + i * stepX;
+            const yPos = this._freqIndexToY(freqIndex, sectionHeight);
+            if (yPos < 0 || yPos > sectionHeight) continue;
+            
+            const y = sectionY + yPos;
+            if (i === 0 || this.frequencyHistory[i - 1] === -1) {
+                this.ctx.moveTo(x, y);
+            } else {
+                this.ctx.lineTo(x, y);
+            }
         }
         this.ctx.stroke();
     }
@@ -191,30 +224,11 @@ export class UIRenderer {
         }
     }
 
-    _drawTargetFrequencyHighlight(dominantFreqIndex) {
-        const sectionY = this.height / 3;
-        const sectionHeight = this.height / 3;
-        const y = this._freqIndexToY(dominantFreqIndex, sectionHeight);
-        if (y === -1) return;
-
-        const highlightHeight = 7;
-        const halfHeight = Math.floor(highlightHeight / 2);
-        const topY = sectionY + y - halfHeight;
-        const bottomY = sectionY + y + halfHeight;
-        const startX = this.layout.labelMargin;
-        const endX = this.width;
-
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        this.ctx.fillRect(startX, sectionY, endX - startX, topY - sectionY);
-        this.ctx.fillRect(startX, bottomY, endX - startX, (sectionY + sectionHeight) - bottomY);
-    }
-
     _drawNoTargetMessage() {
         const sectionY = this.height / 3;
         const sectionHeight = this.height / 3;
         const centerX = this.layout.labelMargin + (this.width - this.layout.labelMargin) / 2;
         const centerY = sectionY + sectionHeight / 2;
-
         this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
         this.ctx.font = '16px sans-serif';
         this.ctx.textAlign = 'center';
