@@ -30,13 +30,12 @@ export class UIRenderer {
     }
 
     render(timeDomainData, frequencyData, currentVolume) {
-        // 音量履歴の更新はスペクトログラムの幅に合わせる
         this.volumeHistory.push(currentVolume);
         if (this.volumeHistory.length > this.maxHistorySize) {
             this.volumeHistory.shift();
         }
 
-        this.ctx.fillStyle = '#fff'; // Default background for axes area
+        this.ctx.fillStyle = '#111'; // Dark background for axes area
         this.ctx.fillRect(0, 0, this.layout.labelMargin, this.height);
 
         this._drawWaveform(timeDomainData);
@@ -63,11 +62,11 @@ export class UIRenderer {
     
     _drawWaveform(dataArray) {
         const sectionHeight = this.height / 3;
-        this.ctx.fillStyle = '#fff';
+        this.ctx.fillStyle = '#111';
         this.ctx.fillRect(this.layout.labelMargin, 0, this.width - this.layout.labelMargin, sectionHeight);
 
         this.ctx.lineWidth = 1;
-        this.ctx.strokeStyle = 'rgb(0, 0, 0)';
+        this.ctx.strokeStyle = 'rgb(220, 220, 220)';
         this.ctx.beginPath();
         
         const startX = this.layout.labelMargin;
@@ -92,7 +91,7 @@ export class UIRenderer {
         const sectionHeight = this.height / 3;
         const startX = this.layout.labelMargin;
 
-        this.ctx.fillStyle = '#fff';
+        this.ctx.fillStyle = '#111';
         this.ctx.fillRect(startX, sectionY, this.layout.spectrumWidth, sectionHeight);
 
         for (let i = 0; i < sectionHeight; i++) {
@@ -133,11 +132,11 @@ export class UIRenderer {
         const sectionHeight = this.height / 3;
         const startX = this.layout.labelMargin + this.layout.spectrumWidth;
 
-        this.ctx.fillStyle = '#fff';
+        this.ctx.fillStyle = '#111';
         this.ctx.fillRect(this.layout.labelMargin, sectionY, this.width - this.layout.labelMargin, sectionHeight);
         
         this.ctx.lineWidth = 2;
-        this.ctx.strokeStyle = 'rgb(50, 50, 200)';
+        this.ctx.strokeStyle = 'rgb(100, 150, 255)';
         this.ctx.beginPath();
         
         for (let i = 0; i < this.volumeHistory.length; i++) {
@@ -152,7 +151,7 @@ export class UIRenderer {
     }
 
     _drawAxesAndLabels() {
-        this.ctx.fillStyle = 'black';
+        this.ctx.fillStyle = 'white';
         this.ctx.font = '12px sans-serif';
 
         this.ctx.textAlign = 'left';
@@ -165,7 +164,7 @@ export class UIRenderer {
         const freqTicks = [250, 500, 1000, 2000, 4000, 8000, 16000];
         
         this.ctx.textAlign = 'right';
-        this.ctx.strokeStyle = '#eee';
+        this.ctx.strokeStyle = '#444'; // Lighter grid lines for dark theme
         this.ctx.lineWidth = 1;
 
         freqTicks.forEach(freq => {
@@ -184,11 +183,12 @@ export class UIRenderer {
     
     _volumeToColor(volume, alpha = 1.0) {
         const hue = 240 - (volume / 255.0) * 240;
-        const effectiveAlpha = volume < 20 ? 0.0 : alpha;
+        const effectiveAlpha = volume < 25 ? 0.0 : alpha; // Increased threshold for less noise on dark bg
         return `hsla(${hue}, 100%, 50%, ${effectiveAlpha})`;
     }
 
     clear() {
-        this.ctx.clearRect(0, 0, this.width, this.height);
+        this.ctx.fillStyle = '#111';
+        this.ctx.fillRect(0, 0, this.width, this.height);
     }
 }
