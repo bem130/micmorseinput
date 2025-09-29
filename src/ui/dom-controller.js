@@ -9,7 +9,8 @@
  * 3. イベントが発生した際、このファイル自身がアプリケーションのロジックを直接操作する
  *    のではなく、`main.js`から渡されたコールバック関数(`onStateChange`)を呼び出します。
  *    これにより、UIの関心事とアプリケーションのロジックを分離しています（関心の分離）。
- * 4. 画像のコピー機能のように、DOMに密接に関連する処理は、このファイル内で完結させます。
+ * 4. 画像のコピー機能やデコード結果の表示のように、DOMに密接に関連する処理は、
+ *    このファイル内で完結させます。
  */
 
 /**
@@ -50,4 +51,16 @@ export function initialize(onStateChange, canvasId) {
             alert('画像のコピーに失敗しました。');
         }
     });
+}
+
+
+/**
+ * デコード結果のテキストを画面に表示します。
+ * @param {string} text - 表示するテキスト。
+ */
+export function updateOutput(text) {
+    const outputElement = document.getElementById('output');
+    if (outputElement) {
+        outputElement.textContent = text;
+    }
 }

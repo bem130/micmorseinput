@@ -2,15 +2,17 @@
  * @fileoverview アプリケーションのエントリーポイント（開始点）
  * @description
  * このファイルは、アプリケーション全体の動作を統括します。
- * 各モジュール（AudioCapturer, MorseAnalyzer, UIRenderer, DomController）を初期化し、
+ * 各モジュール（AudioCapturer, MorseAnalyzer, MorseDecoder, UIRenderer, DomController）を初期化し、
  * それらを連携させる役割を担います。
  *
  * 現在の戦略:
  * 1. `requestAnimationFrame` を使ったメインループを生成します。
  * 2. ループの各フレームで、`AudioCapturer`から最新の音声データを取得します。
  * 3. 取得したデータを`MorseAnalyzer`に渡し、口笛の周波数や音量を分析させます。
- * 4. 生の音声データと分析結果の両方を`UIRenderer`に渡し、Canvasへの描画を指示します。
- * 5. `DomController`からのUIイベント（開始/停止ボタンのクリックなど）を待ち受け、
+ * 4. 分析された音量データを`MorseDecoder`に渡し、モールス信号として解釈させます。
+ * 5. 生の音声データと分析結果を`UIRenderer`に渡し、Canvasへの描画を指示します。
+ * 6. デコード結果を`DomController`に渡し、HTML上でのテキスト表示を更新します。
+ * 7. `DomController`からのUIイベント（開始/停止ボタンのクリックなど）を待ち受け、
  *    アプリケーションの状態（録音中/停止中）を管理します。
  */
 
@@ -18,12 +20,14 @@ import { AudioCapturer } from './audio/audio-capturer.js';
 import * as DomController from './ui/dom-controller.js';
 import { UIRenderer } from './ui/ui-renderer.js';
 import { MorseAnalyzer } from './morse/morse-analyzer.js';
+import { MorseDecoder } from './morse/morse-decoder.js';
 
 class App {
     constructor() {
         this.audioCapturer = new AudioCapturer();
         this.renderer = null;
         this.analyzer = null;
+        this.decoder = null;
         this.animationFrameId = null;
 
         this.timeDomainData = null;
@@ -49,12 +53,19 @@ class App {
                         fftSize: analyserNode.fftSize
                     };
 
-                    if (!this.renderer) {
-                        const canvas = document.getElementById('visualizer');
-                        this.renderer = new UIRenderer(canvas, audioParams);
-                    }
                     if (!this.analyzer) {
                         this.analyzer = new MorseAnalyzer(audioParams);
+                    }
+                    if (!this.decoder) {
+                        this.decoder = new MorseDecoder({
+                            framesPerSecond: 60, // おおよその値
+                            volumeThreshold: 40,
+                            ditTime: 0.12
+                        });
+                    }
+                    if (!this.renderer) {
+                        const canvas = document.getElementById('visualizer');
+                        this.renderer = new UIRenderer(canvas, audioParams, this.decoder);
                     }
 
                     this.timeDomainData = new Uint8Array(analyserNode.fftSize);
@@ -85,6 +96,12 @@ class App {
             analyser.getByteFrequencyData(this.frequencyData);
 
             const analysisResult = this.analyzer.analyze(this.frequencyData);
+
+            if (this.decoder) {
+                this.decoder.process(analysisResult.targetVolume);
+                const decodedText = this.decoder.getDecodedText();
+                DomController.updateOutput(decodedText);
+            }
 
             this.renderer.render(this.timeDomainData, this.frequencyData, analysisResult);
         }

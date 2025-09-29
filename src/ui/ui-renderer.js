@@ -10,18 +10,24 @@
  * 3. 【時間軸のスケール】約5秒間の履歴データを表示領域全体に引き伸ばして描画します。
  *    これにより、モールス信号の短点・長点といった短いイベントが詳細に確認できるようになります。
  * 4. 【スペクトログラム上のハイライト】分析された周波数の履歴を、スペクトログラム上に暗い線として重ねて描画し、口笛の音の軌跡を視覚的に強調します。
+ * 5. 【デコード情報の可視化】音量履歴のグラフ上に、デコードに使われる音量の閾値を線で表示します。
+ *    さらに、その閾値に基づいて判定された短点・長点・スペース区間を、グラフ下部に色付きの
+ *    マーカーとして描画し、デコードの過程を直感的に理解できるようにします。
  */
 
 export class UIRenderer {
     /**
      * @param {HTMLCanvasElement} canvas - 描画対象のCanvas要素。
      * @param {object} audioParams - オーディオ関連のパラメータ。
+     * @param {object} decoder - MorseDecoderのインスタンス。
      */
-    constructor(canvas, audioParams) {
+    constructor(canvas, audioParams, decoder) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d', { willReadFrequently: true });
         this.width = canvas.width;
         this.height = canvas.height;
+        
+        this.decoder = decoder;
 
         this.sampleRate = audioParams.sampleRate;
         this.fftSize = audioParams.fftSize;
@@ -65,6 +71,7 @@ export class UIRenderer {
         this._drawFrequencyHistoryHighlight();
         this._drawSpectrogram();
         this._drawVolumeHistory();
+        this._drawVolumeHistoryDecorations();
         this._drawAxesAndLabels();
         
         if (analysisResult.dominantFreqIndex === -1) {
@@ -141,7 +148,7 @@ export class UIRenderer {
                 const freqIndex = this._yToFreqIndex(y, sectionHeight);
                 if (freqIndex < 0 || freqIndex >= historicalFreqData.length) continue;
                 const volume = historicalFreqData[freqIndex];
-                this.ctx.fillStyle = this._volumeToColor(volume);
+                this.ctx.fillStyle = this._volumeToColor(volume,0.4);
                 this.ctx.fillRect(x, sectionY + y, Math.ceil(stepX), 1);
             }
         }
@@ -167,6 +174,92 @@ export class UIRenderer {
     }
     
     /**
+     * @private
+     * 音量履歴グラフ上に、デコードに関連する情報を重ねて描画します。
+     */
+    _drawVolumeHistoryDecorations() {
+        if (!this.decoder) return;
+    
+        const sectionY = (this.height / 3) * 2;
+        const sectionHeight = this.height / 3;
+        const startX = this.layout.labelMargin + this.layout.spectrumWidth;
+        const drawableWidth = this.width - startX;
+        const stepX = drawableWidth / this.maxHistorySize;
+    
+        // 1. 閾値の線を描画
+        const threshold = this.decoder.volumeThreshold;
+        const yThreshold = sectionY + (sectionHeight - (threshold / 255.0 * sectionHeight));
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(255, 80, 80, 0.8)';
+        this.ctx.lineWidth = 1;
+        this.ctx.setLineDash([4, 2]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(startX, yThreshold);
+        this.ctx.lineTo(this.width, yThreshold);
+        this.ctx.stroke();
+        this.ctx.restore();
+    
+        // 2. 短点・長点・スペースなどのマーカーを描画
+        const State = { SPACE: 0, MARK: 1 };
+        let currentState = this.volumeHistory.length > 0 && this.volumeHistory[0] > threshold ? State.MARK : State.SPACE;
+        let runStartIndex = 0;
+    
+        const drawMarker = (startIndex, endIndex, type) => {
+            const x = startX + startIndex * stepX;
+            const w = (endIndex - startIndex) * stepX;
+            const y = sectionY + sectionHeight - 10; // セクションの下部に描画
+            const h = 8;
+    
+            switch(type) {
+                case 'dit': this.ctx.fillStyle = 'rgba(120, 220, 255, 0.7)'; break;
+                case 'dah': this.ctx.fillStyle = 'rgba(80, 150, 255, 0.9)'; break;
+                case 'char_space': this.ctx.fillStyle = 'rgba(200, 200, 200, 0.5)'; break;
+                case 'word_space': this.ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'; break;
+                default: return; // 短いスペースは描画しない
+            }
+            this.ctx.fillRect(x, y, w, h);
+        };
+    
+        for (let i = 0; i < this.volumeHistory.length; i++) {
+            const isMark = this.volumeHistory[i] > this.decoder.volumeThreshold;
+            const newState = isMark ? State.MARK : State.SPACE;
+    
+            if (newState !== currentState) {
+                const duration = i - runStartIndex;
+                if (duration > 1) { // 非常に短いノイズは無視
+                    if (currentState === State.MARK) {
+                        const type = duration < this.decoder.dahTimeFrames ? 'dit' : 'dah';
+                        drawMarker(runStartIndex, i, type);
+                    } else { // SPACE
+                        if (duration > this.decoder.wordSpaceFrames) {
+                            drawMarker(runStartIndex, i, 'word_space');
+                        } else if (duration > this.decoder.charSpaceFrames) {
+                            drawMarker(runStartIndex, i, 'char_space');
+                        }
+                    }
+                }
+                currentState = newState;
+                runStartIndex = i;
+            }
+        }
+        
+        // 最後の区間を描画
+        const duration = this.volumeHistory.length - runStartIndex;
+        if (duration > 1) {
+            if (currentState === State.MARK) {
+                const type = duration < this.decoder.dahTimeFrames ? 'dit' : 'dah';
+                drawMarker(runStartIndex, this.volumeHistory.length, type);
+            } else { // SPACE
+                 if (duration > this.decoder.wordSpaceFrames) {
+                    drawMarker(runStartIndex, this.volumeHistory.length, 'word_space');
+                } else if (duration > this.decoder.charSpaceFrames) {
+                    drawMarker(runStartIndex, this.volumeHistory.length, 'char_space');
+                }
+            }
+        }
+    }
+    
+    /**
      * スペクトログラム上に、検出された周波数の軌跡を暗い線で描画します。
      * @private
      */
@@ -178,22 +271,31 @@ export class UIRenderer {
         const stepX = drawableWidth / this.maxHistorySize;
 
         this.ctx.lineWidth = 10;
-        this.ctx.strokeStyle = 'rgba(78, 1, 1, 1)';
+        this.ctx.strokeStyle = 'rgba(111, 0, 255, 1)';
         this.ctx.beginPath();
+        let lastValidY = -1;
         for (let i = 0; i < this.frequencyHistory.length; i++) {
             const freqIndex = this.frequencyHistory[i];
-            if (freqIndex === -1) continue;
             
             const x = startX + i * stepX;
+            if (freqIndex === -1) {
+                lastValidY = -1; // 信号が途切れたらリセット
+                continue;
+            }
+            
             const yPos = this._freqIndexToY(freqIndex, sectionHeight);
-            if (yPos < 0 || yPos > sectionHeight) continue;
+            if (yPos < 0 || yPos > sectionHeight) {
+                 lastValidY = -1;
+                continue;
+            }
             
             const y = sectionY + yPos;
-            if (i === 0 || this.frequencyHistory[i - 1] === -1) {
+            if (lastValidY === -1) {
                 this.ctx.moveTo(x, y);
             } else {
                 this.ctx.lineTo(x, y);
             }
+            lastValidY = y;
         }
         this.ctx.stroke();
     }
