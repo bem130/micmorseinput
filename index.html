@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>口笛モールス入力</title>
+    <style>
+        body { font-family: sans-serif; padding: 1em; }
+        canvas { border: 1px solid #ccc; background-color: #fff;}
+        #output { min-height: 50px; border: 1px solid #eee; padding: 10px; margin-top: 10px; }
+        .controls button { font-size: 1.2em; padding: 10px 20px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>口笛モールス入力</h1>
+    <p>下のボタンを押して口笛を吹いてください。</p>
+    
+    <canvas id="visualizer" width="800" height="400"></canvas>
+    
+    <h2>デコード結果:</h2>
+    <p id="output"></p>
+
+    <div class="controls">
+        <button id="startButton">Start</button>
+        <button id="copyButton">Copy Image</button>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+</body>
+</html>
